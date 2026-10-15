@@ -5,13 +5,17 @@ import pandas as pd
 import streamlit as st
 
 st.set_page_config(
-    page_title="Procesador de Movimientos", page_icon="📊", layout="wide"
+    page_title="Procesador Unificado de Movimientos",
+    page_icon="📊",
+    layout="wide",
 )
 
-st.title("📊 Procesador de Ingresos y Egresos (PDF y Excel)")
+st.title("📊 Procesador de Ingresos y Egresos (PDF, Excel y CSV)")
 st.write(
-    "Sube tus archivos en formato **PDF**, **Excel (.xls, .xlsx)** o **CSV** para"
-    " organizarlos automáticamente por destinatario, ingresos y egresos."
+    "Sube tus archivos bancarios en formato **PDF** (extractos Davivienda), así"
+    " como tus planillas en **Excel (.xls, .xlsx)** o **CSV**. La aplicación"
+    " unificará todos los movimientos organizados por destinatario, ingresos y"
+    " egresos."
 )
 
 uploaded_files = st.file_uploader(
@@ -23,83 +27,92 @@ uploaded_files = st.file_uploader(
 if uploaded_files:
   all_transactions = []
 
-  with st.spinner("Procesando y organizando los documentos..."):
+  with st.spinner("Procesando, alineando y unificando los documentos..."):
     for uploaded_file in uploaded_files:
       file_name = uploaded_file.name
       file_extension = file_name.split(".")[-1].lower()
 
       try:
-        # 1. Procesamiento si es PDF
+        # 1. PROCESAMIENTO DE ARCHIVOS PDF (Estructura de doble línea Davivienda)
         if file_extension == "pdf":
           text = extract_text(uploaded_file)
           lines = [line.strip() for line in text.split("\n") if line.strip()]
 
-          dates = []
-          amounts = []
-          descriptions = []
-
           date_pattern = re.compile(r"^(\d{1,2}/\d{2}/\d{4})$")
           money_pattern = re.compile(r"(-?[\d\.]+,\d{2})")
 
-          for line in lines:
+          i = 0
+          while i < len(lines):
+            line = lines[i]
             if date_pattern.match(line):
-              dates.append(line)
-            elif money_pattern.match(line):
-              amounts.append(line)
-            elif any(
-                k in line.upper()
-                for k in [
-                    "BREB",
-                    "COMPRA",
-                    "RETIRO",
-                    "ESTADERO",
-                    "ALTA",
-                    "ABRAHAM",
-                    "SUBLIMEX",
-                    "MELISSA",
-                    "COMISION",
-                    "JAIR",
-                    "PAGO",
-                    "NEQUI",
-                    "DAVIBANK",
-                    "ACH",
-                ]
-            ):
-              descriptions.append(line)
+              fecha = line
+              transac_lines = [line]
+              i += 1
 
-          min_len = min(len(dates), len(amounts))
-          for idx in range(min_len):
-            fecha = dates[idx]
-            monto_str = amounts[idx]
-            cleaned_monto = (
-                monto_str.replace(".", "").replace(",", ".").replace(" ", "")
-            )
-            try:
-              monto = float(cleaned_monto)
-              desc = (
-                  descriptions[idx]
-                  if idx < len(descriptions)
-                  else "TRANSACCION BANCARIA"
-              )
-              tipo = "Egreso" if monto < 0 else "Ingreso"
+              # Recolectar líneas secundarias (como el nombre comercial) hasta la siguiente fecha
+              while i < len(lines):
+                next_line = lines[i]
+                if (
+                    date_pattern.match(next_line)
+                    or "Ponemos a tu disposición" in next_line
+                    or "SUPERINTENDENCIA" in next_line
+                    or "DETALLE DE CUENTA" in next_line
+                    or "Pág" in next_line
+                    or "RESUMEN CUENTA" in next_line
+                ):
+                  break
+                transac_lines.append(next_line)
+                i += 1
 
-              all_transactions.append({
-                  "Archivo": file_name,
-                  "Fecha": fecha,
-                  "Destinatario / Descripcion": desc,
-                  "Monto": monto,
-                  "Tipo": tipo,
-              })
-            except ValueError:
-              continue
+              block_text = " ".join(transac_lines)
+              money_matches = money_pattern.findall(block_text)
 
-        # 2. Procesamiento si es Excel (.xlsx, .xls)
+              if money_matches:
+                # El monto de la transacción suele ser el penúltimo valor monetario (el último es el saldo)
+                if len(money_matches) >= 2:
+                  monto_str = money_matches[-2]
+                else:
+                  monto_str = money_matches[-1]
+
+                cleaned_monto = monto_str.replace(".", "").replace(",", ".")
+                try:
+                  monto = float(cleaned_monto)
+
+                  # Extraer el nombre comercial y código de la transferencia
+                  desc_parts = []
+                  for tl in transac_lines[1:]:
+                    if (
+                        not money_pattern.search(tl)
+                        and "CENTRAL DE C" not in tl
+                        and "BARRANQUILLA" not in tl
+                    ):
+                      desc_parts.append(tl)
+
+                  descripcion = (
+                      " - ".join(desc_parts)
+                      if desc_parts
+                      else "TRANSACCION BANCARIA"
+                  )
+                  descripcion = re.sub(r"\s+", " ", descripcion).strip()
+                  tipo = "Egreso" if monto < 0 else "Ingreso"
+
+                  all_transactions.append({
+                      "Archivo": file_name,
+                      "Fecha": fecha,
+                      "Destinatario / Descripcion": descripcion,
+                      "Monto": monto,
+                      "Tipo": tipo,
+                  })
+                except ValueError:
+                  continue
+            else:
+              i += 1
+
+        # 2. PROCESAMIENTO DE ARCHIVOS EXCEL (.xlsx, .xls)
         elif file_extension in ["xlsx", "xls"]:
           df_excel = pd.read_excel(uploaded_file, sheet_name=0)
-          # Limpiar nombres de columnas
           df_excel.columns = [str(c).strip().lower() for c in df_excel.columns]
 
-          # Buscar automáticamente las columnas clave
           col_fecha = next(
               (c for c in df_excel.columns if "fecha" in c), df_excel.columns[0]
           )
@@ -126,10 +139,11 @@ if uploaded_files:
 
           for _, row in df_excel.iterrows():
             try:
-              fecha = str(row[col_fecha])
+              fecha = str(row[col_fecha]).split(" ")[
+                  0
+              ]  # Limpiar formato de fecha si trae hora
               desc = str(row[col_desc])
               monto_val = str(row[col_monto])
-              # Limpiar formato de moneda
               cleaned_monto = (
                   monto_val.replace("$", "")
                   .replace(".", "")
@@ -149,7 +163,7 @@ if uploaded_files:
             except Exception:
               continue
 
-        # 3. Procesamiento si es CSV
+        # 3. PROCESAMIENTO DE ARCHIVOS CSV
         elif file_extension == "csv":
           df_csv = pd.read_csv(uploaded_file)
           df_csv.columns = [str(c).strip().lower() for c in df_csv.columns]
@@ -180,7 +194,7 @@ if uploaded_files:
 
           for _, row in df_csv.iterrows():
             try:
-              fecha = str(row[col_fecha])
+              fecha = str(row[col_fecha]).split(" ")[0]
               desc = str(row[col_desc])
               cleaned_monto = (
                   str(row[col_monto])
@@ -209,16 +223,19 @@ if uploaded_files:
     df_final = pd.DataFrame(all_transactions)
 
     st.success(
-        f"¡Se han procesado exitosamente {len(df_final)} movimientos en total!"
+        f"¡Se han procesado y unificado exitosamente {len(df_final)} movimientos"
+        " en total!"
     )
     st.subheader("Vista previa unificada")
     st.dataframe(df_final, use_container_width=True)
 
-    # Generar Excel estructurado
+    # Generar Excel estructurado con pestañas profesionales
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-      df_final.to_excel(writer, index=False, sheet_name="Movimientos")
+      # Pestaña 1: Todos los movimientos detallados
+      df_final.to_excel(writer, index=False, sheet_name="Movimientos Unificados")
 
+      # Pestaña 2: Resumen organizado por Tipo y Destinatario
       resumen = (
           df_final.groupby(["Tipo", "Destinatario / Descripcion"])["Monto"]
           .agg(["count", "sum"])
@@ -227,7 +244,7 @@ if uploaded_files:
       resumen.columns = [
           "Tipo",
           "Destinatario / Descripcion",
-          "Cantidad",
+          "Cantidad de Transacciones",
           "Total Monto",
       ]
       resumen.to_excel(
@@ -235,12 +252,15 @@ if uploaded_files:
       )
 
     st.download_button(
-        label="📥 Descargar Excel Organizado",
+        label="📥 Descargar Excel Organizado y Consolidado",
         data=output.getvalue(),
-        file_name="reporte_ingresos_egresos.xlsx",
+        file_name="reporte_consolidado_ingresos_egresos.xlsx",
         mime=(
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         ),
     )
   else:
-    st.warning("No se encontraron transacciones válidas en los archivos subidos.")
+    st.warning(
+        "No se encontraron transacciones válidas. Verifica que los archivos"
+        " contengan la estructura esperada."
+    )
