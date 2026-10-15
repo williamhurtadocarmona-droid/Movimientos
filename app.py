@@ -1,32 +1,33 @@
 import io
+import re
 import pandas as pd
 import pypdf
 import streamlit as st
 
 st.set_page_config(
-    page_title="Extractor de Extractos a Excel", page_icon="📊", layout="centered"
+    page_title="Extractor de Extractos a Excel", page_icon="📊", layout="wide"
 )
 
-st.title("📊 Procesador de Extractos Bancarios PDF a Excel")
+st.title("📊 Procesador Automático de Extractos Bancarios PDF a Excel")
 st.write(
-    "Sube uno o varios extractos bancarios en PDF para organizarlos"
-    " automáticamente por destinatario (ingresos y egresos)."
+    "Sube tus extractos en PDF. La aplicación extraerá todas las"
+    " transacciones, las organizará por destinatario y generará un Excel"
+    " consolidado."
 )
 
-# Habilitar la carga de múltiples archivos con accept_multiple_files=True
 uploaded_files = st.file_uploader(
     "Sube tus archivos PDF", type=["pdf"], accept_multiple_files=True
 )
 
 if uploaded_files:
-  all_data = []
+  all_transactions = []
 
-  with st.spinner("Procesando los documentos..."):
+  with st.spinner("Procesando y extrayendo movimientos de los PDFs..."):
     for uploaded_file in uploaded_files:
       try:
         reader = pypdf.PdfReader(uploaded_file)
 
-        # Si el PDF está protegido/encriptado, intentar desencriptarlo con clave vacía
+        # Desencriptar si es necesario
         if reader.is_encrypted:
           try:
             reader.decrypt("")
@@ -37,64 +38,87 @@ if uploaded_files:
             )
             continue
 
-        text = ""
+        full_text = ""
         for page in reader.pages:
           extracted = page.extract_text()
           if extracted:
-            text += extracted + "\n"
+            full_text += extracted + "\n"
 
-        # === AQUÍ PUEDES ADAPTAR TU LÓGICA DE EXTRACCIÓN DE TRANSACCIONES ===
-        # A modo de ejemplo con los datos analizados previamente:
-        # (Si gustas, puedes implementar expresiones regulares para leer fechas, montos y descripciones automáticamente del texto extraído)
+        # Lógica de extracción de transacciones basada en patrones de extractos bancarios (ej. formato Davivienda)
+        # Buscamos líneas que contengan fechas (DD/MM/YYYY) y montos con formato numérico
+        lines = full_text.split("\n")
+
+        # Patrón para detectar fechas al inicio de línea
+        date_pattern = re.compile(r"^(\d{1,2}/\d{2}/\d{4})")
+
+        for line in lines:
+          match = date_pattern.match(line.strip())
+          if match:
+            fecha = match.group(1)
+            # Limpiar la línea para aislar montos y descripciones
+            # Buscamos montos al final de la línea (ej. -26.500,00 o 4.000,00)
+            monto_match = re.findall(
+                r"(-?[\d\.]+,\d{2})", line
+            )  # Busca números con formato colombiano/español
+            if monto_match:
+              # Tomamos el último valor encontrado en la línea como el monto
+              monto_str = (
+                  monto_match[-1].replace(".", "").replace(",", ".")
+              )  # Convertir a formato float de python
+              try:
+                monto = float(monto_str)
+
+                # La descripción es todo lo que está entre la fecha y el monto
+                descripcion = line.replace(fecha, "").replace(monto_match[-1], "").strip()
+                if not descripcion:
+                  descripcion = "TRANSACCION BANCARIA"
+
+                tipo = "Egreso" if monto < 0 else "Ingreso"
+
+                all_transactions.append({
+                    "Archivo": uploaded_file.name,
+                    "Fecha": fecha,
+                    "Destinatario / Descripcion": descripcion,
+                    "Monto": monto,
+                    "Tipo": tipo,
+                })
+              except ValueError:
+                continue
 
       except Exception as e:
-        st.error(f"Error al leer {uploaded_file.name}: {e}")
+        st.error(f"Error procesando {uploaded_file.name}: {e}")
 
-    st.success("¡Proceso de lectura finalizado!")
+  if all_transactions:
+    df = pd.DataFrame(all_transactions)
 
-    # Ejemplo de datos unificados listos para mostrar
-    data = [
-        {
-            "Archivo": uploaded_files[0].name,
-            "Fecha": "1/09/2026",
-            "Destinatario / Descripcion": "ESTADERO BRISAS DE DICIEMBRE",
-            "Monto": -26500.0,
-            "Tipo": "Egreso",
-        },
-        {
-            "Archivo": uploaded_files[0].name,
-            "Fecha": "1/09/2026",
-            "Destinatario / Descripcion": "ALTA SAS",
-            "Monto": -32000.0,
-            "Tipo": "Egreso",
-        },
-        {
-            "Archivo": uploaded_files[0].name,
-            "Fecha": "2/09/2026",
-            "Destinatario / Descripcion": "JAIR ALFONSO MIELES MULFORD",
-            "Monto": 41000.0,
-            "Tipo": "Ingreso",
-        },
-    ]
+    st.success(
+        f"¡Se han extraído exitosamente {len(df)} movimientos de los archivos"
+        " cargados!"
+    )
 
-    df = pd.DataFrame(data)
-
-    st.subheader("Vista previa de movimientos unificados")
+    st.subheader("Vista previa de todos los movimientos detectados")
     st.dataframe(df, use_container_width=True)
 
-    # Generar Excel consolidado
+    # Generar Excel consolidado profesional
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
       df.to_excel(writer, index=False, sheet_name="Movimientos")
 
-      resumen = df.groupby("Tipo")["Monto"].sum().reset_index()
+      # Hoja de resumen por tipo
+      resumen = df.groupby("Tipo")["Monto"].agg(["count", "sum"]).reset_index()
+      resumen.columns = ["Tipo", "Cantidad", "Total Monto"]
       resumen.to_excel(writer, index=False, sheet_name="Resumen")
 
     st.download_button(
-        label="📥 Descargar Excel Consolidado",
+        label="📥 Descargar Excel Consolidado Completo",
         data=output.getvalue(),
-        file_name="movimientos_consolidados.xlsx",
+        file_name="movimientos_completos_organizados.xlsx",
         mime=(
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         ),
+    )
+  else:
+    st.warning(
+        "No se pudieron extraer transacciones automáticas. Asegúrate de que el"
+        " formato del PDF coincida con el estándar esperado."
     )
