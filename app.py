@@ -8,11 +8,10 @@ st.set_page_config(
     page_title="Extractor de Extractos a Excel", page_icon="📊", layout="wide"
 )
 
-st.title("📊 Procesador Automático de Extractos Bancarios PDF a Excel")
+st.title("📊 Procesador Multiartefacto de Extractos Bancarios PDF")
 st.write(
-    "Sube tus extractos en PDF. La aplicación extraerá todas las"
-    " transacciones, las organizará por destinatario y generará un Excel"
-    " consolidado."
+    "Sube uno o varios extractos bancarios en PDF. La aplicación unificará"
+    " todos los movimientos de todos los archivos cargados."
 )
 
 uploaded_files = st.file_uploader(
@@ -22,19 +21,19 @@ uploaded_files = st.file_uploader(
 if uploaded_files:
   all_transactions = []
 
-  with st.spinner("Procesando y extrayendo movimientos de los PDFs..."):
+  with st.spinner("Procesando y consolidando los archivos PDF..."):
     for uploaded_file in uploaded_files:
       try:
         reader = pypdf.PdfReader(uploaded_file)
 
-        # Desencriptar si es necesario
+        # Desencriptar si el PDF está protegido
         if reader.is_encrypted:
           try:
             reader.decrypt("")
           except Exception:
             st.warning(
-                f"El archivo {uploaded_file.name} está protegido con"
-                " contraseña."
+                f"El archivo {uploaded_file.name} está protegido y no se pudo"
+                " leer."
             )
             continue
 
@@ -44,37 +43,33 @@ if uploaded_files:
           if extracted:
             full_text += extracted + "\n"
 
-        # Lógica de extracción de transacciones basada en patrones de extractos bancarios (ej. formato Davivienda)
-        # Buscamos líneas que contengan fechas (DD/MM/YYYY) y montos con formato numérico
         lines = full_text.split("\n")
-
-        # Patrón para detectar fechas al inicio de línea
         date_pattern = re.compile(r"^(\d{1,2}/\d{2}/\d{4})")
 
         for line in lines:
-          match = date_pattern.match(line.strip())
+          line_str = line.strip()
+          match = date_pattern.match(line_str)
           if match:
             fecha = match.group(1)
-            # Limpiar la línea para aislar montos y descripciones
-            # Buscamos montos al final de la línea (ej. -26.500,00 o 4.000,00)
-            monto_match = re.findall(
-                r"(-?[\d\.]+,\d{2})", line
-            )  # Busca números con formato colombiano/español
+            # Buscar patrones monetarios (ej. -26.500,00 o 4.682.542,00)
+            monto_match = re.findall(r"(-?[\d\.]+,\d{2})", line_str)
             if monto_match:
-              # Tomamos el último valor encontrado en la línea como el monto
               monto_str = (
                   monto_match[-1].replace(".", "").replace(",", ".")
-              )  # Convertir a formato float de python
+              )
               try:
                 monto = float(monto_str)
-
-                # La descripción es todo lo que está entre la fecha y el monto
-                descripcion = line.replace(fecha, "").replace(monto_match[-1], "").strip()
+                descripcion = (
+                    line_str.replace(fecha, "")
+                    .replace(monto_match[-1], "")
+                    .strip()
+                )
                 if not descripcion:
                   descripcion = "TRANSACCION BANCARIA"
 
                 tipo = "Egreso" if monto < 0 else "Ingreso"
 
+                # Acumular correctamente en la lista global
                 all_transactions.append({
                     "Archivo": uploaded_file.name,
                     "Fecha": fecha,
@@ -92,33 +87,36 @@ if uploaded_files:
     df = pd.DataFrame(all_transactions)
 
     st.success(
-        f"¡Se han extraído exitosamente {len(df)} movimientos de los archivos"
-        " cargados!"
+        f"¡Se han consolidado un total de {len(df)} movimientos de"
+        f" {len(uploaded_files)} archivo(s)!"
     )
 
-    st.subheader("Vista previa de todos los movimientos detectados")
+    st.subheader("Vista previa de movimientos consolidados")
     st.dataframe(df, use_container_width=True)
 
-    # Generar Excel consolidado profesional
+    # Generar Excel con hojas de Movimientos y Resumen
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-      df.to_excel(writer, index=False, sheet_name="Movimientos")
+      df.to_excel(writer, index=False, sheet_name="Movimientos Consolidados")
 
-      # Hoja de resumen por tipo
-      resumen = df.groupby("Tipo")["Monto"].agg(["count", "sum"]).reset_index()
-      resumen.columns = ["Tipo", "Cantidad", "Total Monto"]
-      resumen.to_excel(writer, index=False, sheet_name="Resumen")
+      resumen = (
+          df.groupby(["Archivo", "Tipo"])["Monto"]
+          .agg(["count", "sum"])
+          .reset_index()
+      )
+      resumen.columns = ["Archivo", "Tipo", "Cantidad", "Total Monto"]
+      resumen.to_excel(writer, index=False, sheet_name="Resumen por Archivo")
 
     st.download_button(
-        label="📥 Descargar Excel Consolidado Completo",
+        label="📥 Descargar Excel Consolidado General",
         data=output.getvalue(),
-        file_name="movimientos_completos_organizados.xlsx",
+        file_name="movimientos_consolidados_general.xlsx",
         mime=(
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         ),
     )
   else:
     st.warning(
-        "No se pudieron extraer transacciones automáticas. Asegúrate de que el"
-        " formato del PDF coincida con el estándar esperado."
+        "No se detectaron transacciones válidas con el formato esperado en los"
+        " archivos subidos."
     )
