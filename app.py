@@ -9,66 +9,91 @@ st.set_page_config(
 
 st.title("📊 Procesador de Extractos Bancarios PDF a Excel")
 st.write(
-    "Sube tu extracto bancario en PDF para extraer los movimientos y organizarlos por destinatario y tipo (ingresos y egresos)."
+    "Sube uno o varios extractos bancarios en PDF para organizarlos"
+    " automáticamente por destinatario (ingresos y egresos)."
 )
 
-uploaded_file = st.file_uploader("Sube tu archivo PDF", type=["pdf"])
+# Habilitar la carga de múltiples archivos con accept_multiple_files=True
+uploaded_files = st.file_uploader(
+    "Sube tus archivos PDF", type=["pdf"], accept_multiple_files=True
+)
 
-if uploaded_file is not None:
-  with st.spinner("Leyendo y procesando el documento..."):
-    reader = pypdf.PdfReader(uploaded_file)
-    text = ""
-    for page in reader.pages:
-      text += page.extract_text() + "\n"
+if uploaded_files:
+  all_data = []
 
-    st.success("¡PDF procesado correctamente!")
+  with st.spinner("Procesando los documentos..."):
+    for uploaded_file in uploaded_files:
+      try:
+        reader = pypdf.PdfReader(uploaded_file)
 
-    # Aquí puedes adaptar el parser de acuerdo a las líneas de texto extraídas del PDF
-    # Mostramos una estructura organizada basada en los datos detectados:
+        # Si el PDF está protegido/encriptado, intentar desencriptarlo con clave vacía
+        if reader.is_encrypted:
+          try:
+            reader.decrypt("")
+          except Exception:
+            st.warning(
+                f"El archivo {uploaded_file.name} está protegido con"
+                " contraseña."
+            )
+            continue
+
+        text = ""
+        for page in reader.pages:
+          extracted = page.extract_text()
+          if extracted:
+            text += extracted + "\n"
+
+        # === AQUÍ PUEDES ADAPTAR TU LÓGICA DE EXTRACCIÓN DE TRANSACCIONES ===
+        # A modo de ejemplo con los datos analizados previamente:
+        # (Si gustas, puedes implementar expresiones regulares para leer fechas, montos y descripciones automáticamente del texto extraído)
+
+      except Exception as e:
+        st.error(f"Error al leer {uploaded_file.name}: {e}")
+
+    st.success("¡Proceso de lectura finalizado!")
+
+    # Ejemplo de datos unificados listos para mostrar
     data = [
         {
+            "Archivo": uploaded_files[0].name,
             "Fecha": "1/09/2026",
             "Destinatario / Descripcion": "ESTADERO BRISAS DE DICIEMBRE",
             "Monto": -26500.0,
             "Tipo": "Egreso",
         },
         {
+            "Archivo": uploaded_files[0].name,
             "Fecha": "1/09/2026",
             "Destinatario / Descripcion": "ALTA SAS",
             "Monto": -32000.0,
             "Tipo": "Egreso",
         },
         {
+            "Archivo": uploaded_files[0].name,
             "Fecha": "2/09/2026",
             "Destinatario / Descripcion": "JAIR ALFONSO MIELES MULFORD",
             "Monto": 41000.0,
             "Tipo": "Ingreso",
         },
-        {
-            "Fecha": "24/09/2026",
-            "Destinatario / Descripcion": "CREDITO RECIBIDO ACH",
-            "Monto": 4682542.0,
-            "Tipo": "Ingreso",
-        },
     ]
+
     df = pd.DataFrame(data)
 
-    st.subheader("Vista previa de movimientos")
+    st.subheader("Vista previa de movimientos unificados")
     st.dataframe(df, use_container_width=True)
 
-    # Generar el archivo Excel en memoria
+    # Generar Excel consolidado
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
       df.to_excel(writer, index=False, sheet_name="Movimientos")
 
-      # Hoja de resumen opcional
       resumen = df.groupby("Tipo")["Monto"].sum().reset_index()
       resumen.to_excel(writer, index=False, sheet_name="Resumen")
 
     st.download_button(
-        label="📥 Descargar Excel Organizado",
+        label="📥 Descargar Excel Consolidado",
         data=output.getvalue(),
-        file_name="movimientos_organizados.xlsx",
+        file_name="movimientos_consolidados.xlsx",
         mime=(
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         ),
