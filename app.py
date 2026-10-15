@@ -1,6 +1,7 @@
 import io
+import re
 import pandas as pd
-import pdfplumber
+from pdfminer.high_level import extract_text
 import streamlit as st
 
 st.set_page_config(
@@ -10,7 +11,8 @@ st.set_page_config(
 st.title("📊 Procesador Automático de Extractos Bancarios PDF")
 st.write(
     "Sube tus extractos bancarios en PDF. La aplicación extraerá todos los"
-    " movimientos organizados por fecha, descripción, ingresos y egresos."
+    " movimientos, los organizará por ingresos y egresos, y te generará un"
+    " Excel completo."
 )
 
 uploaded_files = st.file_uploader(
@@ -20,54 +22,74 @@ uploaded_files = st.file_uploader(
 if uploaded_files:
   all_transactions = []
 
-  with st.spinner("Extrayendo tablas y movimientos con precisión..."):
+  with st.spinner(
+      "Extrayendo y procesando todas las transacciones con precisión..."
+  ):
     for uploaded_file in uploaded_files:
       try:
-        with pdfplumber.open(uploaded_file) as pdf:
-          for page in pdf.pages:
-            # Extraer tablas de la página
-            tables = page.extract_tables()
-            for table in tables:
-              for row in table:
-                # Filtrar filas que contengan datos de transacciones (buscando formato de fecha)
-                row_text = " ".join([str(cell) for cell in row if cell])
-                if "/" in row_text and (
-                    "-" in row_text or "," in row_text or "." in row_text
-                ):
-                  # Intentar identificar fecha, descripción y monto dentro de las celdas de la tabla
-                  cells = [c.strip() for c in row if c and c.strip()]
-                  if len(cells) >= 3:
-                    fecha = cells[0]
-                    # Buscar la celda que tenga formato de valor monetario
-                    for cell in reversed(cells):
-                      cleaned_cell = (
-                          cell.replace(".", "").replace(",", ".").replace("$", "")
-                      )
-                      try:
-                        monto = float(cleaned_cell)
-                        # Si encontramos el monto, la descripción es el texto intermedio
-                        descripcion = " ".join(
-                            [
-                                c
-                                for c in cells
-                                if c != fecha and c != cell and not "-" in c
-                            ]
-                        )
-                        if not descripcion:
-                          descripcion = "TRANSACCION BANCARIA"
+        # Extraer texto preservando el orden visual con pdfminer
+        text = extract_text(uploaded_file)
+        lines = text.split("\n")
 
-                        tipo = "Egreso" if monto < 0 else "Ingreso"
+        date_pattern = re.compile(r"^(\d{1,2}/\d{2}/\d{4})$")
+        money_pattern = re.compile(r"(-?[\d\.]+,\d{2})")
 
-                        all_transactions.append({
-                            "Archivo": uploaded_file.name,
-                            "Fecha": fecha,
-                            "Destinatario / Descripcion": descripcion,
-                            "Monto": monto,
-                            "Tipo": tipo,
-                        })
-                        break
-                      except ValueError:
-                        continue
+        i = 0
+        while i < len(lines):
+          line = lines[i].strip()
+          if date_pattern.match(line):
+            fecha = line
+            block_lines = []
+            i += 1
+            # Recolectar líneas hasta la siguiente fecha o pie de página
+            while i < len(lines):
+              next_line = lines[i].strip()
+              if (
+                  date_pattern.match(next_line)
+                  or "Ponemos a tu disposición" in next_line
+                  or "SUPERINTENDENCIA" in next_line
+                  or "DETALLE DE CUENTA" in next_line
+                  or "Pág" in next_line
+              ):
+                break
+              if next_line:
+                block_lines.append(next_line)
+              i += 1
+
+            block_text = " ".join(block_lines)
+            money_matches = money_pattern.findall(block_text)
+
+            if money_matches:
+              # El monto de la transacción suele ser el penúltimo valor monetario (el último es el saldo)
+              if len(money_matches) >= 2:
+                monto_str = money_matches[-2]
+              else:
+                monto_str = money_matches[-1]
+
+              cleaned = monto_str.replace(".", "").replace(",", ".")
+              try:
+                monto = float(cleaned)
+                desc = block_text
+                for mm in money_matches:
+                  desc = desc.replace(mm, "")
+                desc = re.sub(r"\s+", " ", desc).strip()
+
+                if not desc or len(desc) < 2:
+                  desc = "TRANSACCION BANCARIA"
+
+                tipo = "Egreso" if monto < 0 else "Ingreso"
+
+                all_transactions.append({
+                    "Archivo": uploaded_file.name,
+                    "Fecha": fecha,
+                    "Destinatario / Descripcion": desc,
+                    "Monto": monto,
+                    "Tipo": tipo,
+                })
+              except ValueError:
+                continue
+          else:
+            i += 1
 
       except Exception as e:
         st.error(f"Error procesando {uploaded_file.name}: {e}")
@@ -106,6 +128,6 @@ if uploaded_files:
     )
   else:
     st.warning(
-        "No se detectaron transacciones en formato de tabla. Asegúrate de que el"
-        " archivo sea el extracto bancario en PDF."
+        "No se detectaron transacciones válidas. Revisa que el archivo PDF"
+        " corresponda al extracto esperado."
     )
