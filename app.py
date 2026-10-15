@@ -5,17 +5,14 @@ import pandas as pd
 import streamlit as st
 
 st.set_page_config(
-    page_title="Procesador Unificado de Movimientos",
-    page_icon="📊",
-    layout="wide",
+    page_title="Procesador Consolidado y Neto", page_icon="📊", layout="wide"
 )
 
-st.title("📊 Procesador de Ingresos y Egresos (PDF, Excel y CSV)")
+st.title("📊 Procesador de Ingresos, Egresos y Consolidado Neto")
 st.write(
-    "Sube tus archivos bancarios en formato **PDF** (extractos Davivienda), así"
-    " como tus planillas en **Excel (.xls, .xlsx)** o **CSV**. La aplicación"
-    " unificará todos los movimientos organizados por destinatario, ingresos y"
-    " egresos."
+    "Sube tus archivos en formato **PDF**, **Excel** o **CSV**. La aplicación"
+    " unificará los movimientos y calculará el **balance neto resultante** por"
+    " cada destinatario/concepto para evitar repeticiones."
 )
 
 uploaded_files = st.file_uploader(
@@ -27,13 +24,13 @@ uploaded_files = st.file_uploader(
 if uploaded_files:
   all_transactions = []
 
-  with st.spinner("Procesando, alineando y unificando los documentos..."):
+  with st.spinner("Procesando y agrupando transacciones..."):
     for uploaded_file in uploaded_files:
       file_name = uploaded_file.name
       file_extension = file_name.split(".")[-1].lower()
 
       try:
-        # 1. PROCESAMIENTO DE ARCHIVOS PDF (Estructura de doble línea Davivienda)
+        # 1. PROCESAMIENTO DE ARCHIVOS PDF (Extractos Davivienda)
         if file_extension == "pdf":
           text = extract_text(uploaded_file)
           lines = [line.strip() for line in text.split("\n") if line.strip()]
@@ -49,7 +46,6 @@ if uploaded_files:
               transac_lines = [line]
               i += 1
 
-              # Recolectar líneas secundarias (como el nombre comercial) hasta la siguiente fecha
               while i < len(lines):
                 next_line = lines[i]
                 if (
@@ -68,7 +64,6 @@ if uploaded_files:
               money_matches = money_pattern.findall(block_text)
 
               if money_matches:
-                # El monto de la transacción suele ser el penúltimo valor monetario (el último es el saldo)
                 if len(money_matches) >= 2:
                   monto_str = money_matches[-2]
                 else:
@@ -77,8 +72,6 @@ if uploaded_files:
                 cleaned_monto = monto_str.replace(".", "").replace(",", ".")
                 try:
                   monto = float(cleaned_monto)
-
-                  # Extraer el nombre comercial y código de la transferencia
                   desc_parts = []
                   for tl in transac_lines[1:]:
                     if (
@@ -139,9 +132,7 @@ if uploaded_files:
 
           for _, row in df_excel.iterrows():
             try:
-              fecha = str(row[col_fecha]).split(" ")[
-                  0
-              ]  # Limpiar formato de fecha si trae hora
+              fecha = str(row[col_fecha]).split(" ")[0]
               desc = str(row[col_desc])
               monto_val = str(row[col_monto])
               cleaned_monto = (
@@ -223,44 +214,51 @@ if uploaded_files:
     df_final = pd.DataFrame(all_transactions)
 
     st.success(
-        f"¡Se han procesado y unificado exitosamente {len(df_final)} movimientos"
-        " en total!"
+        f"¡Se han procesado exitosamente {len(df_final)} movimientos en total!"
     )
-    st.subheader("Vista previa unificada")
-    st.dataframe(df_final, use_container_width=True)
 
-    # Generar Excel estructurado con pestañas profesionales
+    # Crear la vista agrupada con valores netos resultantes
+    df_neto = (
+        df_final.groupby("Destinatario / Descripcion")
+        .agg(
+            Cantidad_Movimientos=("Monto", "count"),
+            Monto_Neto_Resultante=("Monto", "sum"),
+        )
+        .reset_index()
+    )
+
+    df_neto["Tipo Neto"] = df_neto["Monto_Neto_Resultante"].apply(
+        lambda x: "Ingreso Neto" if x >= 0 else "Egreso Neto"
+    )
+    # Reordenar columnas
+    df_neto = df_neto[[
+        "Destinatario / Descripcion",
+        "Cantidad_Movimientos",
+        "Monto_Neto_Resultante",
+        "Tipo Neto",
+    ]]
+
+    st.subheader("Vista consolidada por Destinatario (Valores Netos)")
+    st.dataframe(df_neto, use_container_width=True)
+
+    # Generar Excel estructurado con múltiples pestañas profesionales
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
       # Pestaña 1: Todos los movimientos detallados
-      df_final.to_excel(writer, index=False, sheet_name="Movimientos Unificados")
+      df_final.to_excel(writer, index=False, sheet_name="Movimientos Detallados")
 
-      # Pestaña 2: Resumen organizado por Tipo y Destinatario
-      resumen = (
-          df_final.groupby(["Tipo", "Destinatario / Descripcion"])["Monto"]
-          .agg(["count", "sum"])
-          .reset_index()
-      )
-      resumen.columns = [
-          "Tipo",
-          "Destinatario / Descripcion",
-          "Cantidad de Transacciones",
-          "Total Monto",
-      ]
-      resumen.to_excel(
-          writer, index=False, sheet_name="Resumen por Destinatario"
+      # Pestaña 2: Consolidado neto sin repeticiones
+      df_neto.to_excel(
+          writer, index=False, sheet_name="Consolidado Neto por Destinatario"
       )
 
     st.download_button(
-        label="📥 Descargar Excel Organizado y Consolidado",
+        label="📥 Descargar Excel con Consolidado Neto",
         data=output.getvalue(),
-        file_name="reporte_consolidado_ingresos_egresos.xlsx",
+        file_name="reporte_neto_ingresos_egresos.xlsx",
         mime=(
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         ),
     )
   else:
-    st.warning(
-        "No se encontraron transacciones válidas. Verifica que los archivos"
-        " contengan la estructura esperada."
-    )
+    st.warning("No se encontraron transacciones válidas en los archivos subidos.")
