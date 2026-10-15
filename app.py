@@ -15,13 +15,11 @@ def consolidar_archivos(file_nequi, file_movs):
   df1 = pd.read_excel(
       file_nequi, sheet_name='Table 1', skiprows=header_idx + 1
   )
-  # Seleccionamos Fecha (col 0), Descripción (col 1) y Valor (col 3 aproximadamente)
   df1 = df1.iloc[:, [0, 1, 3]]
   df1.columns = ['Fecha', 'Descripción', 'Valor']
 
   # 2. Leer el segundo archivo de movimientos (.xls)
   df2 = pd.read_excel(file_movs, sheet_name='Movimientos')
-  # Unificamos Valor Débito y Crédito en una sola columna numérica
   val_debito = (
       df2['Valor Débito']
       if 'Valor Débito' in df2.columns
@@ -41,11 +39,10 @@ def consolidar_archivos(file_nequi, file_movs):
       0
   )
 
-  # 4. Filtrar solo envíos / salidas de dinero (valores negativos)
+  # 4. Filtrar solo salidas de dinero (valores negativos)
   df_salidas = df_total[df_total['Valor'] < 0].copy()
 
-  # 5. Limpiar descripciones para extraer el nombre del destinatario
-  # Puedes ajustar o agregar más reemplazos según los textos de tus archivos
+  # 5. Limpiar descripciones para extraer el nombre de la persona
   limpiar_textos = (
       df_salidas['Descripción']
       .astype(str)
@@ -53,24 +50,29 @@ def consolidar_archivos(file_nequi, file_movs):
       .str.replace('ENVIO CON BRE-B A: ', '', case=False)
       .str.strip()
   )
-  df_salidas['Destinatario'] = limpiar_textos
+  df_salidas['Persona'] = limpiar_textos
+  df_salidas['Valor_Absoluto'] = df_salidas['Valor'].abs()
 
-  # 6. Agrupar por destinatario y sumar el total enviado (en valor absoluto)
-  df_salidas['Monto_Enviado'] = df_salidas['Valor'].abs()
+  # 6. Agrupar por Persona: sumar los valores y contar los movimientos
   df_consolidado = (
-      df_salidas.groupby('Destinatario')['Monto_Enviado']
-      .sum()
+      df_salidas.groupby('Persona')
+      .agg(
+          Total_Enviado=('Valor_Absoluto', 'sum'),
+          Cantidad_Envios=('Valor_Absoluto', 'count'),
+      )
       .reset_index()
   )
+
+  # Ordenar de mayor a menor monto
   df_consolidado = df_consolidado.sort_values(
-      by='Monto_Enviado', ascending=False
+      by='Total_Enviado', ascending=False
   ).reset_index(drop=True)
 
   return df_consolidado
 
 
-# --- Integración en Streamlit ---
-st.title('Consolidador de Movimientos y Envíos')
+# --- Interfaz en Streamlit ---
+st.title('Consolidador de Movimientos por Persona')
 
 uploaded_nequi = st.file_uploader('Sube documento.xlsx (Nequi)', type=['xlsx'])
 uploaded_movs = st.file_uploader(
@@ -80,14 +82,16 @@ uploaded_movs = st.file_uploader(
 if uploaded_nequi and uploaded_movs:
   df_resultado = consolidar_archivos(uploaded_nequi, uploaded_movs)
 
-  st.success('¡Movimientos consolidados con éxito!')
+  st.success('¡Consolidado generado con éxito!')
+
+  # Mostramos la tabla con las columnas separadas
   st.dataframe(df_resultado, use_container_width=True)
 
-  # Botón para descargar el resultado en CSV
+  # Botón de descarga en CSV
   csv = df_resultado.to_csv(index=False).encode('utf-8')
   st.download_button(
       label='Descargar consolidado en CSV',
       data=csv,
-      file_name='movimientos_consolidados.csv',
+      file_name='movimientos_por_persona.csv',
       mime='text/csv',
   )
