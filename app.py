@@ -10,8 +10,8 @@ st.set_page_config(
 
 st.title("📊 Procesador de Ingresos y Egresos (PDF y Excel)")
 st.write(
-    "Sube tus archivos en formato **PDF**, **Excel** o **CSV** para organizarlos"
-    " automáticamente por destinatario, ingresos y egresos."
+    "Sube tus archivos en formato **PDF**, **Excel (.xls, .xlsx)** o **CSV** para"
+    " organizarlos automáticamente por destinatario, ingresos y egresos."
 )
 
 uploaded_files = st.file_uploader(
@@ -29,7 +29,7 @@ if uploaded_files:
       file_extension = file_name.split(".")[-1].lower()
 
       try:
-        # 1. Procesamiento si es PDF (extractos bancarios)
+        # 1. Procesamiento si es PDF
         if file_extension == "pdf":
           text = extract_text(uploaded_file)
           lines = [line.strip() for line in text.split("\n") if line.strip()]
@@ -96,8 +96,10 @@ if uploaded_files:
         # 2. Procesamiento si es Excel (.xlsx, .xls)
         elif file_extension in ["xlsx", "xls"]:
           df_excel = pd.read_excel(uploaded_file, sheet_name=0)
+          # Limpiar nombres de columnas
           df_excel.columns = [str(c).strip().lower() for c in df_excel.columns]
 
+          # Buscar automáticamente las columnas clave
           col_fecha = next(
               (c for c in df_excel.columns if "fecha" in c), df_excel.columns[0]
           )
@@ -105,7 +107,7 @@ if uploaded_files:
               (
                   c
                   for c in df_excel.columns
-                  if "desc" in c or "dest" in c or "concepto" in c
+                  if "desc" in c or "dest" in c or "concepto" in c or "detalle" in c
               ),
               (
                   df_excel.columns[1]
@@ -117,7 +119,7 @@ if uploaded_files:
               (
                   c
                   for c in df_excel.columns
-                  if "monto" in c or "valor" in c or "neto" in c
+                  if "monto" in c or "valor" in c or "neto" in c or "debito" in c
               ),
               df_excel.columns[-1],
           )
@@ -126,9 +128,15 @@ if uploaded_files:
             try:
               fecha = str(row[col_fecha])
               desc = str(row[col_desc])
-              monto = float(
-                  str(row[col_monto]).replace(".", "").replace(",", ".")
+              monto_val = str(row[col_monto])
+              # Limpiar formato de moneda
+              cleaned_monto = (
+                  monto_val.replace("$", "")
+                  .replace(".", "")
+                  .replace(",", ".")
+                  .strip()
               )
+              monto = float(cleaned_monto)
               tipo = "Egreso" if monto < 0 else "Ingreso"
 
               all_transactions.append({
@@ -174,9 +182,14 @@ if uploaded_files:
             try:
               fecha = str(row[col_fecha])
               desc = str(row[col_desc])
-              monto = float(
-                  str(row[col_monto]).replace(".", "").replace(",", ".")
+              cleaned_monto = (
+                  str(row[col_monto])
+                  .replace("$", "")
+                  .replace(".", "")
+                  .replace(",", ".")
+                  .strip()
               )
+              monto = float(cleaned_monto)
               tipo = "Egreso" if monto < 0 else "Ingreso"
 
               all_transactions.append({
@@ -201,18 +214,22 @@ if uploaded_files:
     st.subheader("Vista previa unificada")
     st.dataframe(df_final, use_container_width=True)
 
-    # Generar Excel estructurado con pestañas organizadas
+    # Generar Excel estructurado
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
       df_final.to_excel(writer, index=False, sheet_name="Movimientos")
 
-      # Resumen detallado agrupado por Tipo y Destinatario
       resumen = (
           df_final.groupby(["Tipo", "Destinatario / Descripcion"])["Monto"]
           .agg(["count", "sum"])
           .reset_index()
       )
-      resumen.columns = ["Tipo", "Destinatario / Descripcion", "Cantidad", "Total Monto"]
+      resumen.columns = [
+          "Tipo",
+          "Destinatario / Descripcion",
+          "Cantidad",
+          "Total Monto",
+      ]
       resumen.to_excel(
           writer, index=False, sheet_name="Resumen por Destinatario"
       )
