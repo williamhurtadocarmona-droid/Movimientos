@@ -10,9 +10,9 @@ st.set_page_config(
 
 st.title("📊 Procesador Automático de Extractos Bancarios PDF")
 st.write(
-    "Sube tus extractos bancarios en PDF (como los de Davivienda). La"
-    " aplicación extraerá todos los movimientos, los clasificará y te"
-    " permitirá descargar el Excel organizado."
+    "Sube tus extractos bancarios en PDF. La aplicación extraerá todos los"
+    " movimientos detallados, los organizará por destinatario y te permitirá"
+    " descargar el Excel."
 )
 
 uploaded_files = st.file_uploader(
@@ -22,12 +22,11 @@ uploaded_files = st.file_uploader(
 if uploaded_files:
   all_transactions = []
 
-  with st.spinner("Analizando y extrayendo movimientos de los PDFs..."):
+  with st.spinner("Procesando y extrayendo todos los movimientos..."):
     for uploaded_file in uploaded_files:
       try:
         reader = pypdf.PdfReader(uploaded_file)
 
-        # Desencriptar si el PDF está protegido
         if reader.is_encrypted:
           try:
             reader.decrypt("")
@@ -45,59 +44,57 @@ if uploaded_files:
             full_text += extracted + "\n"
 
         lines = full_text.split("\n")
-        date_regex = re.compile(r"^(\d{1,2}/\d{2}/\d{4})$")
+        date_pattern = re.compile(r"^(\d{1,2}/\d{2}/\d{4})$")
+        money_pattern = re.compile(r"(-?[\d\.]+,\d{2})")
 
-        # Parser robusto línea por línea adaptado a tablas bancarias
         i = 0
         while i < len(lines):
           line = lines[i].strip()
-          if date_regex.match(line):
+          if date_pattern.match(line):
             fecha = line
-            desc_lines = []
+            block_lines = []
             i += 1
-            # Recolectar líneas de descripción hasta la siguiente fecha o sección del pie de página
+            # Recolectar las líneas asociadas a esta transacción hasta la siguiente fecha o pie de página
             while i < len(lines):
               next_line = lines[i].strip()
               if (
-                  date_regex.match(next_line)
+                  date_pattern.match(next_line)
                   or "Ponemos a tu disposición" in next_line
                   or "SUPERINTENDENCIA" in next_line
                   or "DETALLE DE CUENTA" in next_line
+                  or "Pág" in next_line
               ):
                 break
-              desc_lines.append(next_line)
+              block_lines.append(next_line)
               i += 1
 
-            combined_text = " ".join(desc_lines)
-            # Buscar montos monetarios en formato colombiano (ej. -26.500,00 o 41.000,00)
-            money_matches = re.findall(r"(-?[\d\.]+,\d{2})", combined_text)
+            block_text = " ".join(block_lines)
+            money_matches = money_pattern.findall(block_text)
 
             if money_matches:
-              # En extractos de este tipo, el monto de la transacción suele ser el penúltimo valor monetario (antes del saldo)
+              # En el formato Davivienda, el monto de la transacción es el penúltimo valor monetario (el último es el saldo)
               if len(money_matches) >= 2:
                 monto_str = money_matches[-2]
               else:
                 monto_str = money_matches[-1]
 
-              cleaned_monto = monto_str.replace(".", "").replace(",", ".")
+              cleaned = monto_str.replace(".", "").replace(",", ".")
               try:
-                monto = float(cleaned_monto)
-
-                # Extraer la descripción eliminando los montos detectados
-                description = combined_text
+                monto = float(cleaned)
+                desc = block_text
                 for mm in money_matches:
-                  description = description.replace(mm, "")
-                description = re.sub(r"\s+", " ", description).strip()
+                  desc = desc.replace(mm, "")
+                desc = re.sub(r"\s+", " ", desc).strip()
 
-                if not description:
-                  description = "TRANSACCION BANCARIA"
+                if not desc or len(desc) < 2:
+                  desc = "TRANSACCION BANCARIA"
 
                 tipo = "Egreso" if monto < 0 else "Ingreso"
 
                 all_transactions.append({
                     "Archivo": uploaded_file.name,
                     "Fecha": fecha,
-                    "Destinatario / Descripcion": description,
+                    "Destinatario / Descripcion": desc,
                     "Monto": monto,
                     "Tipo": tipo,
                 })
@@ -113,8 +110,8 @@ if uploaded_files:
     df = pd.DataFrame(all_transactions)
 
     st.success(
-        f"¡Se han extraído correctamente {len(df)} movimientos de los archivos"
-        " cargados!"
+        f"¡Se han extraído correctamente {len(df)} movimientos detallados de"
+        " los archivos cargados!"
     )
 
     st.subheader("Vista previa de movimientos organizados")
@@ -143,6 +140,6 @@ if uploaded_files:
     )
   else:
     st.warning(
-        "No se detectaron transacciones. Revisa que el PDF sea un extracto"
-        " bancario válido."
+        "No se detectaron transacciones válidas. Revisa que el archivo PDF"
+        " corresponda al extracto esperado."
     )
